@@ -54,6 +54,9 @@ cp data/glossary.json data/glossary.backup.$(date +%Y%m%d_%H%M%S).json
 1) `.env.example` → `.env` 복사
 2) `.env`에 값 설정 (키/토큰은 절대 레포에 커밋 금지)
 
+LLM 설정이 정상인지 확인:
+- `GET /api/llm/status`
+
 ---
 
 ## 5) 엑셀 다운로드 API
