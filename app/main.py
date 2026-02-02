@@ -91,7 +91,17 @@ def search_terms(q: str, category: str = "") -> List[Dict[str, Any]]:
     catn = _norm(category)
     out: List[Dict[str, Any]] = []
 
+    # If no query/category, return a default browse list (first 100)
     if not qn and not catn:
+        items = load_glossary()
+        for item in items[:100]:
+            out.append({
+                "kr": item.get("kr"),
+                "en": item.get("en"),
+                "category": item.get("category"),
+                "oneLine": item.get("oneLine"),
+                "source": item.get("createdBy", "glossary"),
+            })
         return out
 
     # Search across glossary (all items are "confirmed" by default).
@@ -242,6 +252,17 @@ def home(request: Request):
     return tpl.render(llm_enabled=(LLM_MODE != "off"))
 
 
+@app.get("/api/llm/status")
+def api_llm_status():
+    return {
+        "enabled": (LLM_MODE != "off"),
+        "mode": LLM_MODE,
+        "endpointSet": bool(LLM_ENDPOINT),
+        "deploymentSet": bool(LLM_DEPLOYMENT),
+        "apiVersion": LLM_API_VERSION,
+    }
+
+
 @app.get("/api/categories")
 def api_categories():
     # fixed list for UI consistency, but include any extra categories found in data
@@ -334,6 +355,242 @@ def api_export_xlsx():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers_out,
     )
+
+
+def _parse_upload_xlsx(content: bytes) -> List[Dict[str, Any]]:
+    wb = load_workbook(filename=BytesIO(content))
+    ws = wb.active
+
+    header_row = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    header_row = [str(x).strip() if x is not None else "" for x in header_row]
+
+    aliases = {
+        "kr": ["용어(KR)", "용어", "KR", "kr"],
+        "en": ["약어/EN", "EN", "en", "약어"],
+        "category": ["분류", "category"],
+        "oneLine": ["한줄 정의", "정의", "oneLine"],
+        "example": ["예시", "example"],
+        "kpi": ["KPI", "kpi"],
+        "confusions": ["혼동되는 용어", "confusions"],
+    }
+
+    col_map: Dict[str, int] = {}
+    for i, h in enumerate(header_row):
+        hn = (h or "").strip()
+        if not hn:
+            continue
+        for key, names in aliases.items():
+            if hn in names:
+                col_map[key] = i
+
+    if "kr" not in col_map:
+        raise ValueError(f"MISSING_KR_COLUMN: headers={header_row}")
+
+    entries: List[Dict[str, Any]] = []
+    for row in ws.iter_rows(min_row=2):
+        kr = row[col_map["kr"]].value if "kr" in col_map else ""
+        kr = str(kr).strip() if kr is not None else ""
+        if not kr:
+            continue
+
+        entry: Dict[str, Any] = {
+            "kr": kr,
+            "en": str(row[col_map["en"]].value).strip() if ("en" in col_map and row[col_map["en"]].value is not None) else "",
+            "category": str(row[col_map["category"]].value).strip() if ("category" in col_map and row[col_map["category"]].value is not None) else "",
+            "oneLine": str(row[col_map["oneLine"]].value).strip() if ("oneLine" in col_map and row[col_map["oneLine"]].value is not None) else "",
+            "example": str(row[col_map["example"]].value).strip() if ("example" in col_map and row[col_map["example"]].value is not None) else "",
+            "kpi": _split_list(row[col_map["kpi"]].value) if "kpi" in col_map else [],
+            "confusions": _split_list(row[col_map["confusions"]].value) if "confusions" in col_map else [],
+        }
+        if not entry.get("category"):
+            entry["category"] = "AI"
+
+        entries.append(entry)
+
+    return entries
+
+
+def _find_existing(glossary: List[Dict[str, Any]], entry: Dict[str, Any]) -> Optional[int]:
+    tn = _norm(entry.get("kr", ""))
+    en = _norm(entry.get("en", "")) if entry.get("en") else ""
+    for idx, it in enumerate(glossary):
+        if _norm(it.get("kr", "")) == tn:
+            return idx
+        if en and _norm(it.get("en", "")) == en:
+            return idx
+    return None
+
+
+def _diff_keys(existing: Dict[str, Any], incoming: Dict[str, Any]) -> List[str]:
+    keys = ["en", "category", "oneLine", "example", "kpi", "confusions"]
+    diffs = []
+    for k in keys:
+        a = existing.get(k)
+        b = incoming.get(k)
+        if isinstance(a, list):
+            a = sorted([str(x) for x in a])
+        if isinstance(b, list):
+            b = sorted([str(x) for x in b])
+        if (a or "") != (b or ""):
+            diffs.append(k)
+    return diffs
+
+
+@app.post("/api/upload.preview")
+async def api_upload_preview(file: UploadFile = File(...), fillMissing: str = Form("on")):
+    """업로드 전 비교(프리뷰)만 수행.
+
+    - conflicts(중복)인 경우: 기존/신규 값을 같이 내려줌
+    - 아직 glossary.json은 변경하지 않음
+    """
+
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        return JSONResponse(status_code=400, content={"error": "XLSX_ONLY"})
+
+    content = await file.read()
+    try:
+        incoming_entries = _parse_upload_xlsx(content)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": "BAD_XLSX", "detail": str(e)})
+
+    glossary = load_glossary()
+    fill = fillMissing.lower() in ("1", "true", "on", "yes")
+
+    # optional LLM fill (only for missing)
+    filled_by_llm = 0
+    if fill and (LLM_MODE != "off"):
+        for entry in incoming_entries:
+            needs = any([
+                not entry.get("en"),
+                not entry.get("category"),
+                not entry.get("oneLine"),
+                not entry.get("example"),
+                not entry.get("kpi"),
+                not entry.get("confusions"),
+            ])
+            if needs:
+                gen = llm_generate(entry["kr"])
+                gen["kpi"] = _split_list(gen.get("kpi"))
+                gen["confusions"] = _split_list(gen.get("confusions"))
+                _merge_keep_existing(entry, gen)
+                filled_by_llm += 1
+
+    conflicts = []
+    adds = 0
+    for entry in incoming_entries:
+        idx = _find_existing(glossary, entry)
+        if idx is None:
+            adds += 1
+            continue
+        existing = glossary[idx]
+        diff = _diff_keys(existing, entry)
+        conflicts.append({
+            "kr": existing.get("kr"),
+            "diffKeys": diff,
+            "existing": {
+                "kr": existing.get("kr", ""),
+                "en": existing.get("en", ""),
+                "category": existing.get("category", ""),
+                "oneLine": existing.get("oneLine", ""),
+                "example": existing.get("example", ""),
+                "kpi": existing.get("kpi", []) or [],
+                "confusions": existing.get("confusions", []) or [],
+            },
+            "incoming": entry,
+        })
+
+    return {
+        "ok": True,
+        "summary": {
+            "total": len(incoming_entries),
+            "adds": adds,
+            "conflicts": len(conflicts),
+            "filledByLLM": filled_by_llm,
+        },
+        "entries": incoming_entries,
+        "conflicts": conflicts,
+        "llmEnabled": (LLM_MODE != "off"),
+    }
+
+
+@app.post("/api/upload.apply")
+def api_upload_apply(payload: Dict[str, Any] = Body(...)):
+    """업로드 적용.
+
+    payload:
+      - entries: 업로드된 항목 리스트
+      - decisions: { kr: "existing"|"incoming"|"merge" }
+      - defaultDecision: 기본값
+
+    merge는 "기존 우선 + 빈칸만 신규로 채움 + 리스트는 합집합" 입니다.
+    """
+
+    entries = payload.get("entries") or []
+    decisions = payload.get("decisions") or {}
+    default_decision = (payload.get("defaultDecision") or "merge").strip()
+
+    if not isinstance(entries, list):
+        return JSONResponse(status_code=400, content={"error": "BAD_ENTRIES"})
+
+    glossary = load_glossary()
+
+    report = {"added": 0, "updated": 0, "skipped": 0, "merged": 0}
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kr = (entry.get("kr") or "").strip()
+        if not kr:
+            continue
+
+        # normalize
+        entry2 = {
+            "kr": kr,
+            "en": (entry.get("en") or "").strip(),
+            "category": (entry.get("category") or "").strip() or "AI",
+            "oneLine": (entry.get("oneLine") or "").strip(),
+            "example": (entry.get("example") or "").strip(),
+            "kpi": _split_list(entry.get("kpi")),
+            "confusions": _split_list(entry.get("confusions")),
+            "createdBy": "UPLOAD",
+        }
+
+        idx = _find_existing(glossary, entry2)
+        if idx is None:
+            glossary.append(entry2)
+            report["added"] += 1
+            continue
+
+        existing = glossary[idx]
+        decision = (decisions.get(kr) or default_decision).strip()
+
+        if decision == "existing":
+            report["skipped"] += 1
+            continue
+
+        if decision == "incoming":
+            glossary[idx] = {**entry2, "createdBy": existing.get("createdBy", "USER")}
+            report["updated"] += 1
+            continue
+
+        # merge (existing-first)
+        merged = dict(existing)
+        # list union
+        def _union(a, b):
+            sa = set([str(x).strip() for x in (a or []) if str(x).strip()])
+            sb = set([str(x).strip() for x in (b or []) if str(x).strip()])
+            return sorted(sa | sb)
+
+        merged["kpi"] = _union(existing.get("kpi"), entry2.get("kpi"))
+        merged["confusions"] = _union(existing.get("confusions"), entry2.get("confusions"))
+
+        # fill blanks only
+        _merge_keep_existing(merged, entry2)
+        glossary[idx] = merged
+        report["merged"] += 1
+
+    save_glossary(glossary)
+    return {"ok": True, "report": report, "count": len(glossary)}
 
 
 @app.post("/api/upload.xlsx")

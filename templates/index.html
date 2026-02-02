@@ -13,7 +13,7 @@
         <img class="brandLogo" src="/static/hyundai-wia-logo.jpg" alt="HYUNDAI WIA" />
         <div class="brandText">
           <h1>제조 AI/DX 용어집</h1>
-          <p class="sub">HYUNDAI WIA CI 톤(Blue/Red) 기반 UI · 검색/필터/업로드/엑셀</p>
+          <p class="sub"></p>
         </div>
       </div>
     </header>
@@ -44,7 +44,8 @@
     <section class="upload">
       <div class="uploadRow">
         <input id="uploadFile" type="file" accept=".xlsx" />
-        <button id="btnUpload" class="secondary accentOutline">일괄 업로드(xlsx)</button>
+        <button id="btnPreview" class="secondary accentOutline">업로드 비교</button>
+        <button id="btnApply" class="secondary" style="display:none">업로드 적용</button>
         {% if llm_enabled %}
         <label class="toggle">
           <input type="checkbox" id="fillMissing" checked />
@@ -93,7 +94,7 @@ async function loadCategories(){
 async function search(){
   const q = $('q').value.trim();
   const category = $('category').value;
-  if(!q && !category){ $('results').innerHTML = '<div class="muted">검색어 또는 카테고리를 선택해줘.</div>'; return; }
+  // allow empty search to show default 100 entries
   $('detail').innerHTML = '';
   const res = await fetch('/api/search?q='+encodeURIComponent(q)+'&category='+encodeURIComponent(category));
   const data = await res.json();
@@ -223,43 +224,176 @@ async function draft(){
   renderDetail(data.item);
 }
 
-async function uploadXlsx(){
+let uploadPreview = null;
+let uploadDecisions = {};
+let uploadDefaultDecision = 'merge';
+
+function renderUploadPreview(p){
+  uploadPreview = p;
+  uploadDecisions = {};
+  uploadDefaultDecision = 'merge';
+
+  const s = p.summary || {};
+  const conflicts = p.conflicts || [];
+
+  // show apply button
+  $('btnApply').style.display = 'inline-block';
+
+  const rows = conflicts.map((c, idx)=>{
+    const diff = (c.diffKeys||[]).join(', ') || '-';
+    const kr = c.kr || (c.existing && c.existing.kr) || (c.incoming && c.incoming.kr) || '';
+    return `
+      <tr>
+        <td><input type="checkbox" class="csel" data-kr="${escapeHtml(kr)}" checked /></td>
+        <td>${escapeHtml(kr)}</td>
+        <td class="muted">${escapeHtml(diff)}</td>
+        <td>
+          <select class="cdec" data-kr="${escapeHtml(kr)}">
+            <option value="existing">기존 우선</option>
+            <option value="incoming">신규 우선</option>
+            <option value="merge" selected>중복 합치기</option>
+          </select>
+        </td>
+        <td><div class="small"><b>기존</b>: ${escapeHtml((c.existing&&c.existing.oneLine)||'') }</div></td>
+        <td><div class="small"><b>신규</b>: ${escapeHtml((c.incoming&&c.incoming.oneLine)||'') }</div></td>
+      </tr>
+    `;
+  }).join('');
+
+  $('results').innerHTML = `
+    <div class="panel">
+      <div class="panelTitle">업로드 비교</div>
+      <div class="row"><b>총 행</b> ${s.total||0}</div>
+      <div class="row"><b>신규 추가</b> ${s.adds||0}</div>
+      <div class="row"><b>중복(비교 필요)</b> ${s.conflicts||0}</div>
+      <div class="row"><b>LLM 채움</b> ${s.filledByLLM||0}</div>
+
+      <div class="actions" style="justify-content:space-between">
+        <div style="display:flex;gap:8px;align-items:center">
+          <label class="toggle" style="margin-left:0">
+            <input type="checkbox" id="selectAll" checked />
+            전체 선택
+          </label>
+          <select id="bulkDecision">
+            <option value="existing">선택 항목: 기존 우선</option>
+            <option value="incoming">선택 항목: 신규 우선</option>
+            <option value="merge" selected>선택 항목: 중복 합치기</option>
+          </select>
+          <button class="secondary" id="btnBulkApply">선택에 적용</button>
+        </div>
+        <div class="muted">※ 실제 반영은 "업로드 적용" 버튼을 눌러야 함</div>
+      </div>
+
+      <div style="overflow:auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>용어(KR)</th>
+              <th>차이</th>
+              <th>처리</th>
+              <th>기존 한줄</th>
+              <th>신규 한줄</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="6" class="muted">중복 항목 없음(바로 적용 가능)</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // bind bulk controls
+  const selAll = $('selectAll');
+  selAll.addEventListener('change', ()=>{
+    document.querySelectorAll('.csel').forEach(x=>{ x.checked = selAll.checked; });
+  });
+
+  $('btnBulkApply').addEventListener('click', ()=>{
+    const v = $('bulkDecision').value;
+    document.querySelectorAll('.csel').forEach(chk=>{
+      if(!chk.checked) return;
+      const kr2 = chk.getAttribute('data-kr');
+      const dec = document.querySelector(`.cdec[data-kr="${CSS.escape(kr2)}"]`);
+      if(dec) dec.value = v;
+    });
+  });
+}
+
+async function uploadPreviewXlsx(){
   const f = $('uploadFile').files && $('uploadFile').files[0];
   if(!f){ $('results').innerHTML = '<div class="muted">업로드할 .xlsx 파일을 선택해줘.</div>'; return; }
 
-  $('results').innerHTML = '<div class="muted">업로드/처리 중…</div>';
+  $('btnApply').style.display = 'none';
+  $('results').innerHTML = '<div class="muted">업로드 비교 중…</div>';
   const form = new FormData();
   form.append('file', f);
   const fill = $('fillMissing');
   form.append('fillMissing', (fill && fill.checked) ? 'on' : 'off');
 
-  const res = await fetch('/api/upload.xlsx', { method:'POST', body: form });
+  const res = await fetch('/api/upload.preview', { method:'POST', body: form });
   const data = await res.json();
   if(!res.ok){
-    $('results').innerHTML = '<div class="muted">업로드 실패: '+escapeHtml(data.error||'')+'</div>';
+    $('results').innerHTML = '<div class="muted">비교 실패: '+escapeHtml(data.detail||data.error||'')+'</div>';
+    return;
+  }
+  renderUploadPreview(data);
+}
+
+async function uploadApplyXlsx(){
+  if(!uploadPreview){ $('results').innerHTML = '<div class="muted">먼저 업로드 비교를 실행해줘.</div>'; return; }
+
+  // collect decisions from UI
+  const decisions = {};
+  document.querySelectorAll('.cdec').forEach(sel=>{
+    const kr = sel.getAttribute('data-kr');
+    decisions[kr] = sel.value;
+  });
+
+  $('results').insertAdjacentHTML('afterbegin','<div class="muted" id="applyMsg">적용 중…</div>');
+  const res = await fetch('/api/upload.apply', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      entries: uploadPreview.entries || [],
+      decisions,
+      defaultDecision: 'merge'
+    })
+  });
+  const data = await res.json();
+  const m = document.getElementById('applyMsg');
+  if(m) m.remove();
+
+  if(!res.ok){
+    $('results').innerHTML = '<div class="muted">적용 실패: '+escapeHtml(data.error||'')+'</div>';
     return;
   }
 
   const r = data.report || {};
   $('results').innerHTML = `
     <div class="panel">
-      <div class="panelTitle">업로드 결과</div>
+      <div class="panelTitle">업로드 적용 완료</div>
       <div class="row"><b>추가</b> ${r.added||0}</div>
-      <div class="row"><b>업데이트</b> ${r.updated||0}</div>
-      <div class="row"><b>LLM 채움</b> ${r.filledByLLM||0}</div>
-      <div class="row"><b>스킵</b> ${r.skipped||0}</div>
+      <div class="row"><b>업데이트(신규우선)</b> ${r.updated||0}</div>
+      <div class="row"><b>중복합치기</b> ${r.merged||0}</div>
+      <div class="row"><b>스킵(기존우선)</b> ${r.skipped||0}</div>
       <div class="row"><b>총 용어수</b> ${data.count||0}</div>
     </div>
   `;
+
+  // refresh browse list
+  await search();
 }
 
 $('btnSearch').addEventListener('click', search);
 $('btnExport').addEventListener('click', ()=>{ window.location.href = '/api/export.xlsx'; });
-$('btnUpload').addEventListener('click', uploadXlsx);
+$('btnPreview').addEventListener('click', uploadPreviewXlsx);
+$('btnApply').addEventListener('click', uploadApplyXlsx);
 $('q').addEventListener('keydown', (e)=>{ if(e.key==='Enter') search(); });
 $('btnDraft').addEventListener('click', draft);
 
-loadCategories();
+loadCategories().then(()=>search());
 window.loadTerm = loadTerm;
 </script>
 </body>
