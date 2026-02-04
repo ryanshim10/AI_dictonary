@@ -29,12 +29,12 @@ def prompt_full_summary_ko(timeline_md: str) -> str:
     )
 
 
-def prompt_ceo_insights_ko(full_summary_md: str) -> str:
+def prompt_insights_ko(full_summary_md: str) -> str:
     return (
-        "당신은 제조업 관점의 대표이사(CEO) 보좌관입니다.\n"
+        "당신은 제조업(스마트팩토리/AX) 관점의 전략/실행 담당자입니다.\n"
         "아래 전체 요약을 바탕으로 'ROI + 실행체계' 중심으로 시사점을 정리하세요.\n\n"
         "출력 형식(마크다운):\n"
-        "# 대표이사 관점 핵심 시사점(5줄)\n"
+        "# 핵심 시사점(5줄)\n"
         "- ...\n\n"
         "# 사업/투자 시사점(ROI 관점)\n"
         "- 매출/원가/리드타임/OEE/불량/납기 관점으로 정리\n\n"
@@ -42,7 +42,7 @@ def prompt_ceo_insights_ko(full_summary_md: str) -> str:
         "- 데이터 소스/Owner, 운영(MLOps), 현장 적용/표준화, 변경관리, KPI 운영\n\n"
         "# 우선순위 제안 Top 5\n"
         "1. ...\n\n"
-        "# CEO가 물어볼 질문 10개\n"
+        "# 점검 질문 10개\n"
         "1) ...\n\n"
         "주의: 근거 없는 수치/사실은 만들지 말 것.\n\n"
         "[전체요약]\n"

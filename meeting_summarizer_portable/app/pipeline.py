@@ -89,10 +89,13 @@ def process_one(mp4_path: str, base_dir: str, out_root: str, cfg_path: str, log:
     full_md = call_llm(llm_cfg, full_prompt)
     (out_dir / "summary_full.md").write_text(full_md.strip() + "\n", encoding="utf-8")
 
-    # CEO insights
-    ceo_prompt = prompts.prompt_ceo_insights_ko(full_md)
-    ceo_md = call_llm(llm_cfg, ceo_prompt)
-    (out_dir / "ceo_insights.md").write_text(ceo_md.strip() + "\n", encoding="utf-8")
+    # Insights (ROI + execution)
+    ins_prompt = prompts.prompt_insights_ko(full_md)
+    ins_md = call_llm(llm_cfg, ins_prompt)
+    (out_dir / "insights.md").write_text(ins_md.strip() + "\n", encoding="utf-8")
+
+    # backward compatible name
+    (out_dir / "ceo_insights.md").write_text(ins_md.strip() + "\n", encoding="utf-8")
 
     # Optional: full transcript
     if (out_cfg.get("write_transcript_full") or "true").lower() in ("1","true","yes","on"):

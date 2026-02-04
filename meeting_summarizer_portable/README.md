@@ -4,7 +4,7 @@
 
 - `timeline_5min.md` (5분 단위 요약)
 - `summary_full.md` (전체 요약)
-- `ceo_insights.md` (대표이사 관점 시사점: ROI+실행체계 중심)
+- `insights.md` (시사점: ROI+실행체계 중심)
 
 을 생성하는 도구입니다.
 
@@ -63,7 +63,8 @@ python app\main_cli.py --input "input\*.mp4" --out out
 
 - `out/<파일명>_<timestamp>/timeline_5min.md`
 - `out/<파일명>_<timestamp>/summary_full.md`
-- `out/<파일명>_<timestamp>/ceo_insights.md`
+- `out/<파일명>_<timestamp>/insights.md`
+- (호환용) `out/<파일명>_<timestamp>/ceo_insights.md`
 - (선택) `chunks/*.srt`, `chunks/*.txt`, `transcript_full.txt`
 
 ---
