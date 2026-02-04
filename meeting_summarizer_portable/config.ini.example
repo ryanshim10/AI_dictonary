@@ -1,0 +1,38 @@
+[llm]
+; chat_completions | responses
+mode = chat_completions
+
+; Chat Completions endpoint (Azure OpenAI compatible)
+chat_url = https://h-chat-api.autoever.com/v2/api/openai/deployments/gpt-4o-mini/chat/completions
+
+; Responses endpoint
+responses_url = https://h-chat-api.autoever.com/v2/api/openai/responses
+responses_model = gpt-4o-mini
+
+; auth: api-key | bearer
+auth_type = api-key
+api_key =
+api_key_header = api-key
+
+; request
+timeout_sec = 60
+max_tokens = 1200
+
+[stt]
+; whispercpp | faster_whisper (future)
+engine = whispercpp
+
+; paths (relative to this folder)
+ffmpeg = bin/ffmpeg.exe
+whisper_cli = bin/whisper-cli.exe
+whisper_model = models/ggml-small.bin
+
+; language hint for whisper.cpp (ko, en, ...)
+language = ko
+
+; chunking
+chunk_seconds = 300
+
+[output]
+write_chunks = true
+write_transcript_full = true
